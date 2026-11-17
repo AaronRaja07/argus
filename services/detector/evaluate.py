@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 from dataclasses import dataclass
 from pathlib import Path
 from statistics import mean, median
@@ -86,13 +87,59 @@ def load_jsonl(path: Path) -> list[dict]:
     return rows
 
 
-def main() -> None:
+def release_gate(args, faults, detected, false_positives, ttds, outside, by_kind):
+    """Apply an opt-in policy to a completed synthetic benchmark."""
+    timing = median(ttds) if ttds else None
+    missed_kinds = sorted(kind for kind, indexes in by_kind.items()
+                          if not any(index in detected for index in indexes))
+    checks = [
+        ("Faults injected", str(len(faults)), f">= {args.min_faults}",
+         len(faults) >= args.min_faults),
+        ("Fault recall", f"{len(detected) / len(faults):.1%}", f">= {args.min_recall:.1%}",
+         len(detected) / len(faults) >= args.min_recall),
+        ("Fault types with no detection", ", ".join(missed_kinds) or "None", "None",
+         not missed_kinds),
+        ("False alarms", str(len(false_positives)), f"<= {args.max_false_alarms}",
+         len(false_positives) <= args.max_false_alarms),
+        ("Median detection time", f"{timing:.1f}s" if timing is not None else "Unavailable",
+         f"<= {args.max_median_ttd:g}s", timing is not None and timing <= args.max_median_ttd),
+        ("Alert time outside fault windows", f"{outside:.1f}s", f"<= {args.max_noise:g}s",
+         outside <= args.max_noise),
+    ]
+    passed = all(check[3] for check in checks)
+    print("# Argus synthetic release review")
+    print("\nRecommendation: " + ("ADVANCE TO SHADOW MODE" if passed else "HOLD"))
+    print("\n| Check | Observed | Required | Result |")
+    print("|---|---|---|---|")
+    for name, observed, threshold, ok in checks:
+        print(f"| {name} | {observed} | {threshold} | {'Pass' if ok else 'Hold'} |")
+    print("\nA passed benchmark supports a shadow trial with paging disabled.")
+    print("Review live alert noise and missed events before enabling paging.")
+    return 0 if passed else 2
+
+
+def main() -> int | None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--data", default="/data")
     ap.add_argument("--window-grace", type=float, default=45.0,
                     help="seconds of slack allowed for detection lag")
     ap.add_argument("--markdown", action="store_true")
+    ap.add_argument("--release-gate", action="store_true",
+                    help="emit a release review and exit 2 when a check fails")
+    ap.add_argument("--min-faults", type=int, default=6)
+    ap.add_argument("--min-recall", type=float, default=0.90)
+    ap.add_argument("--max-false-alarms", type=int, default=1)
+    ap.add_argument("--max-median-ttd", type=float, default=60.0)
+    ap.add_argument("--max-noise", type=float, default=180.0,
+                    help="maximum alert seconds outside padded fault windows")
     args = ap.parse_args()
+    if args.release_gate and (
+        args.min_faults < 1 or args.max_false_alarms < 0
+        or not 0 <= args.min_recall <= 1
+        or not all(math.isfinite(x) and x >= 0 for x in
+                   (args.max_median_ttd, args.max_noise, args.window_grace))
+    ):
+        ap.error("release gate thresholds must be finite and within their supported ranges")
 
     root = Path(args.data)
     faults = [
@@ -106,7 +153,7 @@ def main() -> None:
 
     if not faults:
         print("no ground truth found — run an experiment first")
-        return
+        return 2 if args.release_gate else None
 
     detected: dict[int, list[Interval]] = {}
     for i, f in enumerate(faults):
@@ -142,6 +189,9 @@ def main() -> None:
     by_kind: dict[str, list[int]] = {}
     for i, f in enumerate(faults):
         by_kind.setdefault(f.meta["kind"], []).append(i)
+
+    if args.release_gate:
+        return release_gate(args, faults, detected, false_positives, ttds, outside, by_kind)
 
     if args.markdown:
         print("| Metric | Value |")
@@ -214,4 +264,4 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

@@ -183,3 +183,20 @@ docs/                    measured results and methodology notes
 ## Licence
 
 MIT
+
+
+## Release review
+
+After a completed, isolated synthetic benchmark, run `make release-review`.
+The report recommends either **advance to shadow mode** with paging disabled
+or **hold**. It checks the labeled fault count, overall recall, coverage of
+each injected fault type, false alarms, median detection delay, and time
+spent alerting outside fault windows. A failed gate exits with status 2.
+
+The defaults ask for at least 6 faults, 90% recall, a detection in every
+injected fault category, at most 1 false alarm, median detection within
+60 seconds, and no more than 180 seconds outside fault windows. The
+[evaluator](services/detector/evaluate.py) exposes these thresholds as
+flags so a team can set a policy before it runs the benchmark. The
+[recorded standard run](docs/RESULTS.md) would hold on alert duration under
+this policy even though it detected all six faults.

@@ -39,6 +39,9 @@ evaluate: ## Score the detector against injected ground truth
 report: ## Emit the evaluation as markdown
 	@$(DC) exec -T detector python evaluate.py --data /data --markdown
 
+release-review: ## Evaluate release criteria for a completed synthetic run
+	@$(DC) exec -T detector python evaluate.py --data /data --release-gate
+
 reset-data: ## Clear ground truth and alert history
 	$(DC) exec -T detector sh -c 'rm -f /data/*.jsonl' && echo "cleared"
 
@@ -49,4 +52,4 @@ fault: ## Inject one fault: make fault KIND=latency_spike MAG=1.5 SECS=120
 clear-faults: ## Clear all active faults
 	@curl -sS -X DELETE localhost:8000/admin/faults | python3 -m json.tool
 
-.PHONY: help up down clean logs ps experiment smoke hard evaluate report reset-data fault clear-faults
+.PHONY: help up down clean logs ps experiment smoke hard evaluate report release-review reset-data fault clear-faults
