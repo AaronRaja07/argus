@@ -1,0 +1,57 @@
+name: CI
+
+on:
+  push: {branches: [main]}
+  pull_request: {branches: [main]}
+
+jobs:
+  test:
+    name: detector unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.12"}
+      - name: Run model tests
+        working-directory: services/detector
+        run: python3 test_models.py
+
+  build:
+    name: compose build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate compose file
+        run: docker compose config --quiet
+      - name: Build images
+        run: docker compose build
+
+  smoke:
+    name: end-to-end smoke
+    runs-on: ubuntu-latest
+    needs: [test, build]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Start stack
+        run: docker compose up -d --build
+      - name: Wait for detector baselines
+        run: |
+          for i in $(seq 1 60); do
+            ready=$(curl -sf localhost:9110/metrics | awk '/^argus_baseline_ready/{print $2}' || echo 0)
+            [ "$ready" = "1.0" ] && echo "baselines ready" && exit 0
+            sleep 5
+          done
+          echo "detector never became ready"; docker compose logs detector; exit 1
+      - name: Inject a fault and confirm the score responds
+        run: |
+          before=$(curl -s localhost:9110/metrics | awk '/^argus_health_score/{print $2}')
+          curl -sS -X POST localhost:8000/admin/faults \
+            -H 'Content-Type: application/json' \
+            -d '{"kind":"latency_spike","magnitude":2.5,"duration_s":90}'
+          sleep 60
+          after=$(curl -s localhost:9110/metrics | awk '/^argus_health_score/{print $2}')
+          echo "health score: $before -> $after"
+          python3 -c "import sys; sys.exit(0 if float('$after') > float('$before') else 1)"
+      - name: Dump logs on failure
+        if: failure()
+        run: docker compose logs

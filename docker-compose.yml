@@ -1,0 +1,79 @@
+name: argus
+
+services:
+  checkout-api:
+    build: ./services/checkout-api
+    container_name: argus-checkout-api
+    ports: ["8000:8000"]
+    environment:
+      WORKER_POOL: "24"
+      BASE_SERVICE_MS: "38"
+      GROUND_TRUTH_PATH: /data/ground_truth.jsonl
+    volumes: ["argus-data:/data"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  loadgen:
+    build: ./services/loadgen
+    container_name: argus-loadgen
+    depends_on:
+      checkout-api: {condition: service_healthy}
+    environment:
+      TARGET_URL: http://checkout-api:8000/checkout
+      BASE_RPS: "6"
+      PEAK_RPS: "38"
+      COMPRESS: "120"        # 1 real sec = 2 simulated min -> 24h in 12 min
+      CONCURRENCY: "80"
+
+  prometheus:
+    image: prom/prometheus:v3.1.0
+    container_name: argus-prometheus
+    ports: ["9090:9090"]
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./prometheus/rules:/etc/prometheus/rules:ro
+      - argus-prom:/prometheus
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=7d
+      - --web.enable-lifecycle
+
+  detector:
+    build: ./services/detector
+    container_name: argus-detector
+    depends_on: [prometheus]
+    ports: ["9110:9110"]
+    environment:
+      PROMETHEUS_URL: http://prometheus:9090
+      EVAL_INTERVAL_S: "10"
+      WARMUP_S: "150"
+      ENTER_THRESHOLD: "3.5"
+      EXIT_THRESHOLD: "2.0"
+      ENTER_FOR: "3"
+      EXIT_FOR: "4"
+    volumes: ["argus-data:/data"]
+
+  grafana:
+    image: grafana/grafana:11.4.0
+    container_name: argus-grafana
+    ports: ["3000:3000"]
+    depends_on: [prometheus]
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      GF_USERS_DEFAULT_THEME: light
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - argus-grafana:/var/lib/grafana
+
+volumes:
+  argus-data:
+  argus-prom:
+  argus-grafana:

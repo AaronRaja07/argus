@@ -1,0 +1,39 @@
+groups:
+  - name: argus-baseline
+    interval: 15s
+    rules:
+      # Classic static-threshold rules. These are deliberately kept as the
+      # BASELINE the ML detector is compared against -- they are what most
+      # teams actually run, and the point of the project is to show where
+      # they fail (they fire on every healthy traffic peak).
+      - alert: HighLatencyStatic
+        expr: >
+          histogram_quantile(0.95, sum by (le)
+            (rate(checkout_request_duration_seconds_bucket[1m]))) > 0.5
+        for: 1m
+        labels: {severity: warning, detector: static}
+        annotations:
+          summary: "p95 latency above 500ms"
+
+      - alert: HighErrorRateStatic
+        expr: >
+          sum(rate(checkout_requests_total{status=~"5.."}[1m]))
+          / clamp_min(sum(rate(checkout_requests_total[1m])), 0.001) > 0.05
+        for: 1m
+        labels: {severity: critical, detector: static}
+        annotations:
+          summary: "5xx rate above 5%"
+
+  - name: argus-adaptive
+    interval: 15s
+    rules:
+      - alert: AnomalyDetected
+        expr: argus_alert_open == 1
+        for: 0m
+        labels: {severity: warning, detector: argus}
+        annotations:
+          summary: "Argus flagged anomalous behaviour"
+          description: "Fused health score {{ $value }} — load-conditioned baseline breach."
+
+      - record: argus:health_score:5m_max
+        expr: max_over_time(argus_health_score[5m])
